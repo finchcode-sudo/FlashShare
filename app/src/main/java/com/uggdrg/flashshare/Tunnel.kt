@@ -42,7 +42,7 @@ class Tunnel(
             override fun log(level: Int, message: String?) {
                 synchronized(logLines) {
                     logLines.addLast(message ?: "")
-                    while (logLines.size > 14) logLines.removeFirst()
+                    while (logLines.size > 8) logLines.removeFirst()
                 }
             }
         })
@@ -132,14 +132,25 @@ class Tunnel(
             current = sess
             sessions.add(sess)
             sess.setConfig("StrictHostKeyChecking", "no")
-            sess.setServerAliveInterval(30_000)
-            sess.setServerAliveCountMax(3)
+            // 不再发送 JSch 自己的 keepalive@jsch.sf.net：Termux 里系统 ssh 不带它，
+            // 隧道能稳定存活，而 App 里带着它时，拿到网址后一分钟内就被断开。
             sess.connect(15_000)
             if (!running || (winner.get() != null && winner.get() !== sess)) return
             sess.setPortForwardingR(80, "127.0.0.1", localPort)
 
             val ch = sess.openChannel("shell") as ChannelShell
             ch.setPty(usePty)
+            // Termux 对照实验：ssh 的标准输入保持打开（不是 EOF）时隧道才正常。
+            // 这里给通道接一个永远阻塞、不会结束的输入流，模拟同样的条件。
+            ch.setInputStream(object : java.io.InputStream() {
+                override fun read(): Int {
+                    try {
+                        Thread.sleep(Long.MAX_VALUE)
+                    } catch (_: InterruptedException) {
+                    }
+                    return -1
+                }
+            })
             val reader = BufferedReader(InputStreamReader(ch.inputStream))
             // 注意：不能传超时参数。JSch 只要传了超时就会要求服务器回复 shell/pty 请求，
             // 而 localhost.run 不回复，会导致 "channel request: timeout"。
@@ -147,18 +158,20 @@ class Tunnel(
 
             val urlRegex = Regex("https://[A-Za-z0-9-]+\\.lhr\\.life")
             var got = false
+            var urlAt = 0L
             while (running) {
                 val line = reader.readLine() ?: break
                 val m = urlRegex.find(line) ?: continue
                 if (winner.compareAndSet(null, sess) || winner.get() === sess) {
                     got = true
+                    if (urlAt == 0L) urlAt = System.currentTimeMillis()
                     onUrl(m.value)
                 } else {
                     return // 另一个端口已经先成功，本连接退出
                 }
             }
             if (!got) errs.add("$label：连接已建立，但服务器没有返回网址就关闭了")
-            else lastEnd = "服务器关闭了会话"
+            else lastEnd = "服务器关闭了会话（已稳定 ${(System.currentTimeMillis() - urlAt) / 1000} 秒）"
         } catch (e: Exception) {
             if (running && winner.get() === current) {
                 lastEnd = "${e.javaClass.simpleName}: ${e.message}"

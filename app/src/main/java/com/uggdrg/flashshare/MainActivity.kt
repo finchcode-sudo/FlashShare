@@ -46,6 +46,11 @@ class MainActivity : AppCompatActivity() {
             startKeepAlive()
         }
 
+    // assets/zh.js：把页面翻译成中文，并隐藏披萨图、页脚等
+    private val zhScript: String by lazy {
+        assets.open("zh.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +81,11 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
                 return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                view?.evaluateJavascript(zhScript, null)
             }
 
             override fun onRenderProcessGone(

@@ -11,7 +11,8 @@ import java.io.InputStreamReader
  * 不需要账号，也不需要在手机里放额外的二进制文件。
  * 断线会自动重连；重连后网址可能变化，会再次回调 onUrl。
  *
- * 连接失败时会轮换不同的算法配置重试，并把真实的失败原因交给 onFatal。
+ * 密钥交换和主机密钥校验已确认可用；上一版卡在 shell/pty 的通道请求没有回复，
+ * 所以这里轮换「不申请 pty」和「申请 pty」两种方式重试，并把真实失败原因交给 onFatal。
  */
 class Tunnel(
     private val localPort: Int,
@@ -28,14 +29,8 @@ class Tunnel(
 
     private val logLines = ArrayDeque<String>()
 
-    // 依次尝试：1) 库的默认算法  2) 只用 NIST 曲线 + RSA/ECDSA 主机密钥
-    private val configs: List<Map<String, String>> = listOf(
-        emptyMap(),
-        mapOf(
-            "kex" to "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256",
-            "server_host_key" to "rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ssh-rsa"
-        )
-    )
+    // 依次尝试：1) 不申请 pty  2) 申请 pty
+    private val ptyModes = listOf(false, true)
 
     fun start() {
         running = true
@@ -69,22 +64,25 @@ class Tunnel(
         var lastError = ""
         while (running) {
             var gotUrl = false
+            val usePty = ptyModes[attempt % ptyModes.size]
             try {
-                onStatus(if (everGotUrl) "隧道断开，正在重连…" else "正在建立公网隧道…（第 ${attempt + 1} 次）")
+                onStatus(
+                    if (everGotUrl) "隧道断开，正在重连…"
+                    else "正在建立公网隧道…（第 ${attempt + 1} 次，${if (usePty) "pty" else "无 pty"}）"
+                )
                 synchronized(logLines) { logLines.clear() }
                 val s = JSch().getSession("nokey", "localhost.run", 22)
                 s.setConfig("StrictHostKeyChecking", "no")
-                configs[attempt % configs.size].forEach { (k, v) -> s.setConfig(k, v) }
                 s.setServerAliveInterval(30_000)
                 s.setServerAliveCountMax(3)
-                s.connect(10_000)
+                s.connect(8_000)
                 session = s
                 s.setPortForwardingR(80, "127.0.0.1", localPort)
 
                 val ch = s.openChannel("shell") as ChannelShell
-                ch.setPty(true)
+                ch.setPty(usePty)
                 val reader = BufferedReader(InputStreamReader(ch.inputStream))
-                ch.connect(10_000)
+                ch.connect(8_000)
 
                 val urlRegex = Regex("https://[A-Za-z0-9-]+\\.lhr\\.life")
                 while (running) {
@@ -101,7 +99,7 @@ class Tunnel(
             } catch (e: InterruptedException) {
                 return
             } catch (e: Exception) {
-                lastError = "${e.javaClass.simpleName}: ${e.message}"
+                lastError = "${e.javaClass.simpleName}: ${e.message}（${if (usePty) "pty" else "无 pty"}）"
             } finally {
                 try {
                     session?.disconnect()
@@ -112,7 +110,7 @@ class Tunnel(
             if (!gotUrl) {
                 failuresWithoutUrl++
                 attempt++
-                if (!everGotUrl && failuresWithoutUrl >= configs.size * 2) {
+                if (!everGotUrl && failuresWithoutUrl >= ptyModes.size * 2) {
                     onFatal(
                         "无法连接公网隧道服务（localhost.run）\n原因：$lastError\n\n日志：\n${recentLog()}"
                     )
@@ -120,7 +118,7 @@ class Tunnel(
                 }
             }
             try {
-                Thread.sleep(2000)
+                Thread.sleep(1000)
             } catch (e: InterruptedException) {
                 return
             }

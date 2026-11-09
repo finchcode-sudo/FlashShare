@@ -1,8 +1,7 @@
 package com.uggdrg.flashshare
 
 import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,227 +9,163 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
-import android.provider.OpenableColumns
 import android.provider.Settings
-import android.view.View
-import android.widget.Toast
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.uggdrg.flashshare.databinding.ActivityMainBinding
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.io.ByteArrayInputStream
 
+/**
+ * 参考 FilePizza（github.com/kern/filepizza）：
+ * 发送方页面 = 一个普通网页，文件通过 WebRTC 从浏览器直连朋友的浏览器，
+ * 中间只有 PeerJS 信令服务和 STUN，没有需要自己购买的服务器。
+ * 所以这个 App 只做三件事：加载页面、让文件选择器能用、用前台服务保活。
+ */
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var b: ActivityMainBinding
-    private val files = mutableListOf<SharedFile>()
-    private val expiryOptions = listOf(
-        "1 小时" to 3_600_000L,
-        "6 小时" to 21_600_000L,
-        "1 天" to 86_400_000L,
-        "3 天" to 259_200_000L
-    )
-    private var expiryIndex = 1
-    private var pendingStart = false
-    private var currentUrl: String? = null
+    private lateinit var web: WebView
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
 
-    private val picker =
-        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-            addFiles(uris)
+    private val chooser =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+            val uris = WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data)
+            fileCallback?.onReceiveValue(uris)
+            fileCallback = null
         }
 
     private val notifPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            if (pendingStart) {
-                pendingStart = false
-                startSharing()
-            }
+            startKeepAlive()
         }
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        b = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(b.root)
 
-        b.pickCard.setOnClickListener { picker.launch(arrayOf("*/*")) }
-        b.expiryRow.setOnClickListener { chooseExpiry() }
-        b.passwordSwitch.setOnCheckedChangeListener { _, on ->
-            b.passwordInput.visibility = if (on) View.VISIBLE else View.GONE
+        web = WebView(this)
+        setContentView(web)
+
+        web.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
-        b.startButton.setOnClickListener { onStartClicked() }
-        b.stopButton.setOnClickListener {
-            stopService(Intent(this, ShareService::class.java))
-        }
-        b.copyButton.setOnClickListener {
-            currentUrl?.let {
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("link", it))
-                Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
-            }
-        }
-        b.shareButton.setOnClickListener {
-            currentUrl?.let {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, "我给你分享了文件，用浏览器打开下载：$it")
+
+        web.webViewClient = object : WebViewClient() {
+            // FilePizza 默认用 Google 的 STUN，国内通常连不上。
+            // 这里拦截页面对 /api/ice 的请求，换成国内可用的 STUN 列表。
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                val url = request?.url
+                if (url != null && url.path == "/api/ice" && url.host == HOME_HOST) {
+                    return WebResourceResponse(
+                        "application/json", "utf-8", 200, "OK",
+                        mapOf("Cache-Control" to "no-store"),
+                        ByteArrayInputStream(ICE_JSON.toByteArray(Charsets.UTF_8))
+                    )
                 }
-                startActivity(Intent.createChooser(send, "分享链接"))
+                return super.shouldInterceptRequest(view, request)
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: android.webkit.RenderProcessGoneDetail?
+            ): Boolean {
+                // 渲染进程被系统杀掉时不要让整个 App 崩溃，重新加载页面
+                web.loadUrl(HOME_URL)
+                return true
             }
         }
-        b.batteryButton.setOnClickListener {
-            val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                .setData(Uri.parse("package:$packageName"))
-            try {
-                startActivity(i)
-            } catch (e: Exception) {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                params: FileChooserParams?
+            ): Boolean {
+                fileCallback?.onReceiveValue(null)
+                fileCallback = filePathCallback
+                return try {
+                    chooser.launch(params!!.createIntent())
+                    true
+                } catch (e: Exception) {
+                    fileCallback = null
+                    false
+                }
             }
         }
 
-        ShareState.status.observe(this) { render(it) }
-        ShareState.hits.observe(this) { n ->
-            b.hitText.text = "本机已收到 $n 次访问" +
-                if (n == 0) "（朋友打开链接后这里会增加；一直是 0 说明公网链接没打通）" else ""
-        }
-        refreshFiles()
-        refreshExpiry()
-    }
-
-    private fun addFiles(uris: List<Uri>) {
-        for (uri in uris) {
-            try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: Exception) {
+        // 返回键：网页能后退就后退，否则把 App 放到后台（不退出，分享继续）
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
             }
-            if (files.none { it.uri == uri }) files.add(describe(uri))
-        }
-        refreshFiles()
-    }
+        })
 
-    private fun describe(uri: Uri): SharedFile {
-        var name = "file"
-        var size = -1L
-        contentResolver.query(uri, null, null, null, null)?.use { c ->
-            if (c.moveToFirst()) {
-                val ni = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val si = c.getColumnIndex(OpenableColumns.SIZE)
-                if (ni >= 0) name = c.getString(ni) ?: name
-                if (si >= 0 && !c.isNull(si)) size = c.getLong(si)
-            }
-        }
-        val mime = contentResolver.getType(uri) ?: "application/octet-stream"
-        return SharedFile(uri, name, size, mime)
-    }
+        if (savedInstanceState == null) web.loadUrl(HOME_URL) else web.restoreState(savedInstanceState)
 
-    private fun refreshFiles() {
-        if (files.isEmpty()) {
-            b.fileSummary.text = "尚未选择"
-            b.fileList.text = ""
-        } else {
-            val total = files.sumOf { maxOf(it.size, 0L) }
-            b.fileSummary.text = "已选 ${files.size} 个文件 · ${formatSize(total)}"
-            b.fileList.text = files.joinToString("\n") { "• ${it.name}（${formatSize(it.size)}）" }
-        }
-    }
-
-    private fun chooseExpiry() {
-        AlertDialog.Builder(this)
-            .setTitle("过期时间")
-            .setItems(expiryOptions.map { it.first }.toTypedArray()) { _, which ->
-                expiryIndex = which
-                refreshExpiry()
-            }
-            .show()
-    }
-
-    private fun refreshExpiry() {
-        b.expiryValue.text = "${expiryOptions[expiryIndex].first} ›"
-    }
-
-    private fun onStartClicked() {
-        if (files.isEmpty()) {
-            Toast.makeText(this, "请先选择文件", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (b.passwordSwitch.isChecked && b.passwordInput.text.isNullOrEmpty()) {
-            Toast.makeText(this, "请输入密码", Toast.LENGTH_SHORT).show()
-            return
-        }
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            pendingStart = true
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-            return
+        } else {
+            startKeepAlive()
         }
-        startSharing()
     }
 
-    private fun startSharing() {
-        ShareState.files = files.toList()
-        ShareState.status.value = ShareStatus.Starting
-        val intent = Intent(this, ShareService::class.java).apply {
-            putExtra(ShareService.EXTRA_DURATION_MS, expiryOptions[expiryIndex].second)
-            if (b.passwordSwitch.isChecked) {
-                putExtra(ShareService.EXTRA_PASSWORD, b.passwordInput.text.toString())
-            }
-        }
-        ContextCompat.startForegroundService(this, intent)
+    override fun onResume() {
+        super.onResume()
+        askBatteryExemptionOnce()
     }
 
-    private fun render(s: ShareStatus) {
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        web.saveState(outState)
+    }
+
+    private fun startKeepAlive() {
+        ContextCompat.startForegroundService(this, Intent(this, ShareService::class.java))
+    }
+
+    /** 只在第一次打开时弹一次系统的"忽略电池优化"授权框，避免反复打扰。 */
+    private fun askBatteryExemptionOnce() {
+        val prefs = getSharedPreferences("flashshare", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked_battery", false)) return
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val needBattery = !pm.isIgnoringBatteryOptimizations(packageName)
-        when (s) {
-            is ShareStatus.Idle -> {
-                currentUrl = null
-                b.setupPanel.visibility = View.VISIBLE
-                b.sharePanel.visibility = View.GONE
-                b.errorText.visibility = View.GONE
-            }
-            is ShareStatus.Error -> {
-                currentUrl = null
-                b.setupPanel.visibility = View.VISIBLE
-                b.sharePanel.visibility = View.GONE
-                b.errorText.text = s.msg
-                b.errorText.visibility = View.VISIBLE
-            }
-            is ShareStatus.Starting -> {
-                b.setupPanel.visibility = View.GONE
-                b.sharePanel.visibility = View.VISIBLE
-                b.statusText.text = "正在启动…"
-                b.urlText.text = ""
-                setLinkButtons(false)
-                b.batteryButton.visibility = View.GONE
-            }
-            is ShareStatus.Waiting -> {
-                currentUrl = null
-                b.setupPanel.visibility = View.GONE
-                b.sharePanel.visibility = View.VISIBLE
-                b.statusText.text = s.msg
-                b.urlText.text = ""
-                setLinkButtons(false)
-                b.batteryButton.visibility = if (needBattery) View.VISIBLE else View.GONE
-            }
-            is ShareStatus.Live -> {
-                currentUrl = s.url
-                b.setupPanel.visibility = View.GONE
-                b.sharePanel.visibility = View.VISIBLE
-                val until = SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(s.expiresAt))
-                b.statusText.text = "分享中 · 有效至 $until\n请保持手机联网，对方下载完再停止"
-                b.urlText.text = s.url
-                setLinkButtons(true)
-                b.batteryButton.visibility = if (needBattery) View.VISIBLE else View.GONE
-            }
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        prefs.edit().putBoolean("asked_battery", true).apply()
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:$packageName"))
+            )
+        } catch (_: Exception) {
         }
     }
 
-    private fun setLinkButtons(enabled: Boolean) {
-        b.copyButton.isEnabled = enabled
-        b.shareButton.isEnabled = enabled
+    companion object {
+        private const val HOME_HOST = "file.pizza"
+        private const val HOME_URL = "https://file.pizza/"
+
+        // 结构和 FilePizza 的 /api/ice 返回值一致（见其 src/app/api/ice/route.ts）：
+        // host/path 是 PeerJS 信令服务默认值，iceServers 换成多个 STUN。
+        private const val ICE_JSON =
+            "{\"host\":\"0.peerjs.com\",\"path\":\"/\",\"iceServers\":[" +
+                "{\"urls\":\"stun:stun.miwifi.com:3478\"}," +
+                "{\"urls\":\"stun:stun.chat.bilibili.com:3478\"}," +
+                "{\"urls\":\"stun:stun.cloudflare.com:3478\"}," +
+                "{\"urls\":\"stun:stun.l.google.com:19302\"}]}"
     }
 }

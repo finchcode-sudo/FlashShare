@@ -1,20 +1,25 @@
 # 闪传 FlashShare
 
-手机直接当文件服务器：选文件 → 生成公网链接 → 朋友用浏览器打开就能下载。
-不需要自己的服务器，文件不上传到任何网盘。
+参考开源项目 [FilePizza](https://github.com/kern/filepizza) 的思路：
+文件留在你手机的网页里，朋友打开链接后，两边的浏览器通过 WebRTC 直接传输。
+不需要自己的服务器，也不需要内网穿透隧道。
 
 ## 原理
-- `FileServer`（NanoHTTPD）：只监听 127.0.0.1，提供文件列表页和下载（支持断点续传、可选密码）。
-- `Tunnel`（JSch）：SSH 反向隧道到 localhost.run，得到 `https://xxxx.lhr.life`。
-- `ShareService`：前台服务保活，到期自动停止。
+- App 用 WebView 加载 `https://file.pizza/`（FilePizza 作者托管的公共实例）。
+- 在页面里选文件、点开始，页面生成下载链接和二维码，发给朋友即可。
+- 中间只有 PeerJS 信令服务（`0.peerjs.com`）和 STUN 服务，文件内容不经过它们。
+- `MainActivity` 拦截页面对 `/api/ice` 的请求，把 Google STUN 换成国内可用的 STUN 列表。
+- `ShareService` 是前台服务 + 唤醒锁，保活用；通知上的"停止分享"会结束整个 App。
 
 ## 编译（GitHub Actions）
-1. 把本目录推到 GitHub 仓库的 main 分支。
-2. 打开仓库 Actions → Build APK，等待完成。
-3. 在运行详情的 Artifacts 里下载 `FlashShare-debug-apk`，解压得到 APK 安装。
+推送到 main 分支后，在仓库 Actions → Build APK 的 Artifacts 里下载 `FlashShare-debug-apk`。
+
+## 使用注意
+- 发送期间 App 必须保持运行，对方下载完再退出。返回键只会把 App 放到后台，不会退出。
+- 第一次打开会弹出"忽略电池优化"授权框，请选允许。
+- ColorOS 等系统还需要在 设置 → 电池 → 应用耗电管理 里给闪传"允许后台运行"。
 
 ## 已知风险（尚未在真机上测试）
-- 隧道依赖 localhost.run，国内网络可能连不上或不稳定；服务改版也可能导致网址正则失效（见 Tunnel.kt）。
-- JSch 在部分 Android 版本上的加密算法协商可能失败，首次运行请先用小文件测试。
-- Android 15 对前台服务 dataSync 类型有每日时长限制。
-- 对方下载期间，你的手机必须联网、不被系统杀后台。
+- file.pizza 和 0.peerjs.com 在你的网络下能否访问，需要实测。
+- 双方都在严格 NAT 后面时，没有 TURN 中继就可能连不上。
+- 浏览器版本过旧可能不兼容，需要较新的系统 WebView。

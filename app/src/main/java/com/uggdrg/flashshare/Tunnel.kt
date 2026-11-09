@@ -137,7 +137,9 @@ class Tunnel(
             val ch = sess.openChannel("shell") as ChannelShell
             ch.setPty(usePty)
             val reader = BufferedReader(InputStreamReader(ch.inputStream))
-            ch.connect(15_000)
+            // 注意：不能传超时参数。JSch 只要传了超时就会要求服务器回复 shell/pty 请求，
+            // 而 localhost.run 不回复，会导致 "channel request: timeout"。
+            ch.connect()
 
             val urlRegex = Regex("https://[A-Za-z0-9-]+\\.lhr\\.life")
             var got = false

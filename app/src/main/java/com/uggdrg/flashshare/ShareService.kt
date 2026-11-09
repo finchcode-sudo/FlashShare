@@ -41,6 +41,7 @@ class ShareService : Service() {
         val duration = intent?.getLongExtra(EXTRA_DURATION_MS, DEFAULT_DURATION_MS) ?: DEFAULT_DURATION_MS
         val password = intent?.getStringExtra(EXTRA_PASSWORD)?.takeIf { it.isNotEmpty() }
         expiresAt = System.currentTimeMillis() + duration
+        ShareState.resetHits()
 
         createChannel()
         val first = buildNotification("正在启动…")

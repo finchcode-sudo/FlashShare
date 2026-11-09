@@ -19,6 +19,19 @@ object ShareState {
 
     @Volatile
     var files: List<SharedFile> = emptyList()
+
+    /** 本地服务器收到的 HTTP 请求数，用来判断公网链接有没有真正打通。 */
+    val hits = MutableLiveData(0)
+    private val hitCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun recordHit() {
+        hits.postValue(hitCounter.incrementAndGet())
+    }
+
+    fun resetHits() {
+        hitCounter.set(0)
+        hits.postValue(0)
+    }
 }
 
 fun formatSize(bytes: Long): String {

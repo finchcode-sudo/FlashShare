@@ -28,8 +28,12 @@ class Tunnel(
     private val sessions = Collections.synchronizedList(mutableListOf<Session>())
     private val logLines = ArrayDeque<String>()
 
-    private val ports = listOf(22, 443)
-    private val ptyModes = listOf(false, true)
+    // 443 端口实测会被服务器直接断开，只用 22；先用 pty（和命令行 ssh 一致），失败再试无 pty
+    private val ports = listOf(22)
+    private val ptyModes = listOf(true, false)
+
+    @Volatile
+    private var lastEnd = ""
 
     fun start() {
         running = true
@@ -75,8 +79,8 @@ class Tunnel(
         while (running) {
             val usePty = ptyModes[round % ptyModes.size]
             onStatus(
-                if (everGotUrl) "隧道断开，正在重连…"
-                else "正在建立公网隧道…（第 ${round + 1} 轮，同时尝试 22 / 443 端口）"
+                if (everGotUrl) "隧道断开：$lastEnd\n正在重连…\n" + recentLog()
+                else "正在建立公网隧道…（第 ${round + 1} 轮，${if (usePty) "pty" else "无 pty"}）"
             )
             synchronized(logLines) { logLines.clear() }
 
@@ -154,7 +158,11 @@ class Tunnel(
                 }
             }
             if (!got) errs.add("$label：连接已建立，但服务器没有返回网址就关闭了")
+            else lastEnd = "服务器关闭了会话"
         } catch (e: Exception) {
+            if (running && winner.get() === current) {
+                lastEnd = "${e.javaClass.simpleName}: ${e.message}"
+            }
             if (running && (current == null || winner.get() !== current)) {
                 errs.add("$label：${e.javaClass.simpleName}: ${e.message}")
             }

@@ -91,6 +91,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         ShareState.status.observe(this) { render(it) }
+        ShareState.hits.observe(this) { n ->
+            b.hitText.text = "本机已收到 $n 次访问" +
+                if (n == 0) "（朋友打开链接后这里会增加；一直是 0 说明公网链接没打通）" else ""
+        }
         refreshFiles()
         refreshExpiry()
     }
@@ -204,9 +208,11 @@ class MainActivity : AppCompatActivity() {
                 b.batteryButton.visibility = View.GONE
             }
             is ShareStatus.Waiting -> {
+                currentUrl = null
                 b.setupPanel.visibility = View.GONE
                 b.sharePanel.visibility = View.VISIBLE
                 b.statusText.text = s.msg
+                b.urlText.text = ""
                 setLinkButtons(false)
                 b.batteryButton.visibility = if (needBattery) View.VISIBLE else View.GONE
             }

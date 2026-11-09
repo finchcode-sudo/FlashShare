@@ -18,6 +18,7 @@ class FileServer(
 ) : NanoHTTPD("127.0.0.1", port) {
 
     override fun serve(session: IHTTPSession): Response {
+        ShareState.recordHit()
         return try {
             if (password != null && !authorized(session)) {
                 return newFixedLengthResponse(

@@ -212,7 +212,13 @@ class MainActivity : AppCompatActivity() {
             currentUrl?.let {
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, "我给你分享了文件，用浏览器打开下载：$it")
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "我给你分享了文件，用浏览器打开下面的链接：\n$it\n\n" +
+                            "页面是英文的，点中间绿色的 Download 按钮就能下载。" +
+                            "下载期间我这边要保持在线，请尽快下载。\n" +
+                            "如果提示要输入密码（Password），向我要。"
+                    )
                 }
                 startActivity(Intent.createChooser(send, "分享链接"))
             }

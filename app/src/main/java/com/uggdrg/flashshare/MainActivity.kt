@@ -99,7 +99,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        web = WebView(this)
+        web = KeepAliveWebView(this)
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -591,5 +591,16 @@ class MainActivity : AppCompatActivity() {
                 "{\"urls\":\"stun:stun.chat.bilibili.com:3478\"}," +
                 "{\"urls\":\"stun:stun.cloudflare.com:3478\"}," +
                 "{\"urls\":\"stun:stun.l.google.com:19302\"}]}"
+    }
+}
+
+/**
+ * App 切到后台后，系统会通知 WebView"窗口不可见"，浏览器内核随即把页面降速甚至挂起，
+ * PeerJS 的心跳跟不上，中转服务就会把发送端当成掉线。
+ * 这里始终告诉内核"窗口可见"，让页面在后台继续正常运行。
+ */
+private class KeepAliveWebView(context: android.content.Context) : WebView(context) {
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(View.VISIBLE)
     }
 }

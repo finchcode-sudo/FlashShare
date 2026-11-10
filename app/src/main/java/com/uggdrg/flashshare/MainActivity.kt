@@ -528,7 +528,7 @@ class MainActivity : AppCompatActivity() {
         // 优先给朋友自己的中文下载页（把上传端的 PeerJS ID 放在 # 后面）；
         // 没拿到 ID 时退回 FilePizza 的英文链接
         val peerId = s.optString("peerId")
-        linkIsFallback = peerId.isEmpty()
+        linkIsFallback = true
         val url = if (linkIsFallback) shortUrl else "$DOWNLOAD_PAGE#$peerId"
         currentUrl = url
         val until = SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(expireAt))

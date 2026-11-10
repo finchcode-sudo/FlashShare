@@ -23,9 +23,24 @@
     return null;
   }
 
+  // 页面创建分享频道时会 POST /api/create，请求体里有上传端的 PeerJS ID。
+  // 朋友的中文下载页不需要向 file.pizza 查询，直接用这个 ID 连过来。
+  var origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      var u = typeof input === 'string' ? input : (input && input.url) || '';
+      if (u.indexOf('/api/create') !== -1 && init && typeof init.body === 'string') {
+        var id = JSON.parse(init.body).uploaderPeerID;
+        if (id) window.__fsPeerId = id;
+      }
+    } catch (e) {}
+    return origFetch.apply(this, arguments);
+  };
+
   window.__fs = {
     state: function () {
       var s = { stage: 'starting' };
+      if (window.__fsPeerId) s.peerId = window.__fsPeerId;
       var shortI = q('#copyable-input-short-url');
       var longI = q('#copyable-input-long-url');
       if (shortI && shortI.value) {

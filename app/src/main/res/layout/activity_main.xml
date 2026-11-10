@@ -184,6 +184,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:textColor="#555555"
+                android:textIsSelectable="true"
                 android:textSize="14sp" />
 
             <LinearLayout

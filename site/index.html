@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>闪传 · 下载文件</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#111; --sub:#777; --line:#e6e8ec; --pri:#3668e8; --ok:#16a34a; --err:#d32f2f; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111214; --card:#1c1d20; --text:#eee; --sub:#9a9ca3; --line:#2c2e33; --pri:#6c8ff5; --ok:#4ade80; --err:#ff6b6b; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:28px 16px 48px; }
+  h1 { font-size:24px; margin:8px 0 4px; color:var(--pri); }
+  .tag { color:var(--sub); font-size:13px; margin:0 0 20px; }
+  .card { background:var(--card); border-radius:16px; padding:18px; margin-bottom:14px; }
+  .title { font-size:17px; margin:0 0 12px; }
+  .file { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+  .file:first-of-type { border-top:0; }
+  .fn { word-break:break-all; font-size:15px; }
+  .fs { color:var(--sub); font-size:13px; white-space:nowrap; }
+  button { width:100%; border:0; border-radius:12px; padding:15px; font-size:17px; color:#fff;
+    background:var(--pri); cursor:pointer; margin-top:6px; }
+  button.ghost { background:transparent; color:var(--sub); font-size:14px; padding:10px; }
+  button:disabled { opacity:.5; }
+  input { width:100%; padding:13px; border-radius:10px; border:1px solid var(--line);
+    background:var(--bg); color:var(--text); font-size:16px; margin-bottom:8px; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin:12px 0 6px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--pri); transition:width .2s; }
+  .sub { color:var(--sub); font-size:13px; line-height:1.6; }
+  .err { color:var(--err); font-size:15px; line-height:1.6; }
+  .ok { color:var(--ok); }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>闪传</h1>
+  <p class="tag">文件直接从对方手机传到你的浏览器，不经过任何服务器存储。</p>
+
+  <div id="v-connecting" class="card">
+    <p class="title">正在连接对方…</p>
+    <p class="sub" id="slow" hidden>
+      连接比较慢。请确认：<br>
+      1. 对方的手机还开着「闪传」App，并保持联网；<br>
+      2. 你和对方都没有开启会拦截 P2P 的网络（部分公司或学校网络会拦截）；<br>
+      3. 可以试试切换 Wi-Fi / 流量后刷新页面。
+    </p>
+  </div>
+
+  <div id="v-password" class="card hide">
+    <p class="title">这个文件需要密码</p>
+    <input id="pw" type="password" placeholder="输入对方告诉你的密码" autocomplete="off">
+    <p class="err" id="pw-err"></p>
+    <button id="pw-btn">确定</button>
+  </div>
+
+  <div id="v-ready" class="card hide">
+    <p class="title" id="ready-title"></p>
+    <div id="list"></div>
+    <p class="sub" id="big-warn" hidden>文件较大，手机浏览器可能因为内存不足而失败。建议在电脑上下载。</p>
+    <button id="dl-btn">开始下载</button>
+  </div>
+
+  <div id="v-progress" class="card hide">
+    <p class="title" id="prog-title">正在下载…</p>
+    <div class="bar"><i id="bar"></i></div>
+    <p class="sub" id="prog-text"></p>
+    <p class="sub">请不要关闭本页面，对方也要保持在线。</p>
+    <button class="ghost" id="stop-btn">停止下载</button>
+  </div>
+
+  <div id="v-done" class="card hide">
+    <p class="title ok" id="done-title"></p>
+    <p class="sub">文件已保存到浏览器的下载目录。如果没有看到，请查看浏览器的下载记录。</p>
+  </div>
+
+  <div id="v-error" class="card hide">
+    <p class="err" id="err-text"></p>
+    <button id="retry-btn">重新连接</button>
+  </div>
+</main>
+
+<script src="peerjs.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // 和 FilePizza 上传端（FlashShare App 里的网页）使用同一套 PeerJS 信令服务和消息协议：
+  // RequestInfo → (PasswordRequired → UsePassword →) Info → Start → Chunk… → Done
+  var PEER_HOST = '0.peerjs.com';
+  var ICE = [
+    { urls: 'stun:stun.miwifi.com:3478' },
+    { urls: 'stun:stun.chat.bilibili.com:3478' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.l.google.com:19302' }
+  ];
+  var BIG_FILE = 1.5 * 1024 * 1024 * 1024;
+  var PeerCtor = window.Peer || (window.peerjs && window.peerjs.Peer);
+
+  var $ = function (id) { return document.getElementById(id); };
+  var views = ['connecting', 'password', 'ready', 'progress', 'done', 'error'];
+  function show(name) {
+    views.forEach(function (v) { $('v-' + v).classList.toggle('hide', v !== name); });
+  }
+
+  function fmt(n) {
+    var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+  }
+  function baseName(n) {
+    var parts = String(n).split('/');
+    return parts[parts.length - 1] || 'file';
+  }
+
+  var uploaderId = decodeURIComponent(location.hash.replace(/^#/, '')).trim();
+  var peer = null, conn = null, files = null, totalSize = 0;
+  var received = 0, state = 'connecting', finished = false;
+  var current = null;      // { index, name, parts, writer }
+  var slowTimer = null;
+
+  function fail(msg) {
+    state = 'error';
+    clearTimeout(slowTimer);
+    $('err-text').textContent = msg;
+    show('error');
+  }
+
+  function cleanup() {
+    clearTimeout(slowTimer);
+    try { if (conn) conn.close(); } catch (e) {}
+    try { if (peer) peer.destroy(); } catch (e) {}
+    conn = null; peer = null; files = null; current = null;
+    received = 0; totalSize = 0; finished = false;
+  }
+
+  function connect() {
+    cleanup();
+    state = 'connecting';
+    show('connecting');
+    $('slow').hidden = true;
+    slowTimer = setTimeout(function () { $('slow').hidden = false; }, 4000);
+
+    if (!uploaderId) { fail('链接不完整，请向对方重新要一个链接。'); return; }
+    if (!PeerCtor) { fail('页面脚本没有加载成功，请刷新页面重试。'); return; }
+
+    peer = new PeerCtor({
+      host: PEER_HOST, port: 443, path: '/', secure: true,
+      config: { iceServers: ICE }, debug: 0
+    });
+
+    peer.on('error', function (err) {
+      if (finished) return;
+      var t = err && err.type;
+      if (t === 'peer-unavailable') {
+        fail('找不到对方：对方可能已经停止分享，或者关闭了「闪传」App。');
+      } else if (t === 'network' || t === 'server-error' || t === 'socket-error' || t === 'socket-closed') {
+        fail('连不上中转服务（0.peerjs.com），请检查网络后重试。');
+      } else {
+        fail('连接出错：' + ((err && err.message) || t || '未知错误'));
+      }
+    });
+
+    peer.on('open', function () {
+      conn = peer.connect(uploaderId, { reliable: true });
+      conn.on('open', function () {
+        conn.send({
+          type: 'RequestInfo',
+          browserName: 'FlashShare-Web', browserVersion: '1',
+          osName: navigator.platform || '', osVersion: '',
+          mobileVendor: '', mobileModel: ''
+        });
+      });
+      conn.on('data', onData);
+      conn.on('error', function (err) {
+        if (!finished) fail('连接出错：' + ((err && err.message) || '未知错误'));
+      });
+      conn.on('close', function () {
+        if (finished || state === 'done' || state === 'error') return;
+        if (state === 'progress') {
+          fail('连接中断了，已收到 ' + fmt(received) + '。请让对方保持在线，然后重新连接。');
+        } else {
+          fail('对方已经停止分享，或者关闭了「闪传」App。');
+        }
+      });
+    });
+  }
+
+  function onData(d) {
+    if (!d || !d.type) return;
+    switch (d.type) {
+      case 'PasswordRequired':
+        clearTimeout(slowTimer);
+        state = 'password';
+        $('pw-err').textContent = d.errorMessage ? '密码不对，请重新输入' : '';
+        show('password');
+        break;
+      case 'Info':
+        clearTimeout(slowTimer);
+        files = d.files || [];
+        totalSize = files.reduce(function (a, f) { return a + f.size; }, 0);
+        showReady();
+        break;
+      case 'Chunk':
+        onChunk(d);
+        break;
+      case 'Error':
+        fail('对方返回错误：' + d.error);
+        break;
+    }
+  }
+
+  function showReady() {
+    state = 'ready';
+    $('ready-title').textContent = '准备下载 ' + files.length + ' 个文件（共 ' + fmt(totalSize) + '）';
+    var list = $('list');
+    list.textContent = '';
+    files.forEach(function (f) {
+      var row = document.createElement('div');
+      row.className = 'file';
+      var n = document.createElement('span'); n.className = 'fn'; n.textContent = baseName(f.fileName);
+      var s = document.createElement('span'); s.className = 'fs'; s.textContent = fmt(f.size);
+      row.appendChild(n); row.appendChild(s); list.appendChild(row);
+    });
+    $('big-warn').hidden = !(totalSize > BIG_FILE && /Mobile|Android|iPhone/i.test(navigator.userAgent));
+    show('ready');
+  }
+
+  // ---- 下载 ----
+  function startDownload() {
+    if (!files || !files.length || !conn) return;
+    state = 'progress';
+    received = 0;
+    show('progress');
+    updateProgress();
+    startFile(0);
+  }
+
+  function startFile(index) {
+    var f = files[index];
+    current = { index: index, name: baseName(f.fileName), parts: [], type: f.type, size: f.size };
+    $('prog-title').textContent = '正在下载（' + (index + 1) + '/' + files.length + '）：' + current.name;
+    conn.send({ type: 'Start', fileName: f.fileName, offset: 0 });
+  }
+
+  function onChunk(d) {
+    if (state !== 'progress' || !current) return;
+    var u8 = d.bytes instanceof Uint8Array ? d.bytes : new Uint8Array(d.bytes);
+    current.parts.push(u8);
+    received += u8.byteLength;
+    conn.send({ type: 'ChunkAck', fileName: d.fileName, offset: d.offset, bytesReceived: u8.byteLength });
+    updateProgress();
+    if (d.final) finishFile();
+  }
+
+  function finishFile() {
+    var cur = current;
+    saveBlob(cur.name, cur.parts, cur.type);
+    cur.parts = null;
+    if (cur.index + 1 < files.length) {
+      startFile(cur.index + 1);
+    } else {
+      finished = true;
+      state = 'done';
+      try { conn.send({ type: 'Done' }); } catch (e) {}
+      $('done-title').textContent = '下载完成，共 ' + files.length + ' 个文件（' + fmt(totalSize) + '）';
+      show('done');
+      setTimeout(function () { try { peer.destroy(); } catch (e) {} }, 1500);
+    }
+  }
+
+  function saveBlob(name, parts, type) {
+    var blob = new Blob(parts, { type: type || 'application/octet-stream' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 120000);
+  }
+
+  function updateProgress() {
+    var pct = totalSize ? Math.min(100, received / totalSize * 100) : 0;
+    $('bar').style.width = pct.toFixed(1) + '%';
+    $('prog-text').textContent = fmt(received) + ' / ' + fmt(totalSize) + '（' + pct.toFixed(0) + '%）';
+  }
+
+  // ---- 按钮 ----
+  $('dl-btn').addEventListener('click', startDownload);
+  $('retry-btn').addEventListener('click', connect);
+  $('stop-btn').addEventListener('click', function () {
+    try { conn.send({ type: 'Pause' }); } catch (e) {}
+    finished = true;
+    cleanup();
+    fail('已停止下载。');
+  });
+  function submitPw() {
+    var v = $('pw').value;
+    if (!v || !conn) return;
+    conn.send({ type: 'UsePassword', password: v });
+  }
+  $('pw-btn').addEventListener('click', submitPw);
+  $('pw').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitPw(); });
+
+  connect();
+})();
+</script>
+</body>
+</html>

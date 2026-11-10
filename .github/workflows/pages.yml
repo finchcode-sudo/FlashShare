@@ -1,0 +1,53 @@
+name: Deploy download page
+
+# 把 site/ 目录发布到 GitHub Pages（朋友打开的中文下载页）。
+# 第一次使用前，需要在仓库 Settings → Pages → Build and deployment → Source 选 "GitHub Actions"。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # PeerJS 和 FilePizza 用同一个大版本（^1.5.4），随页面一起发布，运行时不依赖第三方 CDN
+      - name: Assemble site
+        run: |
+          mkdir -p build_site
+          cp -r site/* build_site/
+          npm pack peerjs@1.5.4 --silent
+          tar -xzf peerjs-1.5.4.tgz
+          cp package/dist/peerjs.min.js build_site/peerjs.min.js
+          ls -l build_site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build_site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

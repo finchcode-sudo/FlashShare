@@ -80,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var password = ""
     private var expireAt = 0L
     private var currentUrl: String? = null
+    private var linkIsFallback = false
     private var pageError: String? = null
 
     private val engineScript: String by lazy {
@@ -212,13 +213,17 @@ class MainActivity : AppCompatActivity() {
             currentUrl?.let {
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(
-                        Intent.EXTRA_TEXT,
+                    val text = if (linkIsFallback) {
                         "我给你分享了文件，用浏览器打开下面的链接：\n$it\n\n" +
                             "页面是英文的，点中间绿色的 Download 按钮就能下载。" +
                             "下载期间我这边要保持在线，请尽快下载。\n" +
                             "如果提示要输入密码（Password），向我要。"
-                    )
+                    } else {
+                        "我给你分享了文件，用浏览器打开下面的链接，点「开始下载」就行：\n$it\n\n" +
+                            "下载期间我这边要保持在线，请尽快下载。" +
+                            if (password.isNotEmpty()) "\n需要密码的话向我要。" else ""
+                    }
+                    putExtra(Intent.EXTRA_TEXT, text)
                 }
                 startActivity(Intent.createChooser(send, "分享链接"))
             }
@@ -518,8 +523,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateLive(s: JSONObject) {
-        val url = s.optString("shortUrl")
-        if (url.isEmpty()) return
+        val shortUrl = s.optString("shortUrl")
+        if (shortUrl.isEmpty()) return
+        // 优先给朋友自己的中文下载页（把上传端的 PeerJS ID 放在 # 后面）；
+        // 没拿到 ID 时退回 FilePizza 的英文链接
+        val peerId = s.optString("peerId")
+        linkIsFallback = peerId.isEmpty()
+        val url = if (linkIsFallback) shortUrl else "$DOWNLOAD_PAGE#$peerId"
         currentUrl = url
         val until = SimpleDateFormat("M月d日 HH:mm", Locale.CHINA).format(Date(expireAt))
         b.statusText.text = "分享中 · 有效至 $until\n请保持手机联网、不要关闭 App，对方下载完再停止"
@@ -528,7 +538,8 @@ class MainActivity : AppCompatActivity() {
         b.shareButton.isEnabled = true
         val total = s.optInt("total", 0)
         val active = s.optInt("active", 0)
-        b.hitText.text = if (total == 0) "等待朋友打开链接…" else "已连接 $total 人 · 正在下载 $active 人"
+        val count = if (total == 0) "等待朋友打开链接…" else "已连接 $total 人 · 正在下载 $active 人"
+        b.hitText.text = if (linkIsFallback) count else "$count\n备用链接（英文页面）：$shortUrl"
     }
 
     private fun showDebug(show: Boolean) {
@@ -568,6 +579,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val HOME_HOST = "file.pizza"
         private const val HOME_URL = "https://file.pizza/"
+
+        // 朋友打开的中文下载页（site/index.html，由 GitHub Pages 发布）
+        private const val DOWNLOAD_PAGE = "https://finchcode-sudo.github.io/FlashShare/"
 
         // 结构和 FilePizza 的 /api/ice 返回值一致（见其 src/app/api/ice/route.ts）：
         // host/path 是 PeerJS 信令服务默认值，iceServers 换成多个 STUN。

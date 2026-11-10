@@ -11,6 +11,12 @@
 - `MainActivity` 拦截页面对 `/api/ice` 的请求，把 Google STUN 换成国内可用的 STUN 列表。
 - `ShareService` 是前台服务 + 唤醒锁，保活用；通知上的"停止分享"会结束整个 App。
 
+## 朋友打开的中文下载页
+`site/index.html` 是纯静态页面，由 GitHub Pages 发布（`.github/workflows/pages.yml`），
+用 PeerJS 直接连到你手机里的网页，说的是 FilePizza 的同一套消息协议。
+链接形如 `https://<用户名>.github.io/FlashShare/#<上传端PeerJS ID>`，ID 在 `#` 后面，不会发给任何服务器。
+第一次使用前要在仓库 Settings → Pages → Source 选 "GitHub Actions"。
+
 ## 编译（GitHub Actions）
 推送到 main 分支后，在仓库 Actions → Build APK 的 Artifacts 里下载 `FlashShare-debug-apk`。
 
